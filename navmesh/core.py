@@ -40,7 +40,7 @@ def point_in_region(region, point):
     x = float(point[0])
     y = float(point[1])
     for first, second in polygon_edges(region):
-        if _side(first, second, (x, y)) <= 0.0:
+        if _side(first, second, (x, y)) < -EPSILON:
             return False
     return True
 
@@ -70,10 +70,12 @@ class NavMesh(object):
     def _build_links(self):
         for i in range(len(self.regions)):
             for j in range(i + 1, len(self.regions)):
-                shared = self._shared_edge(i, j)
-                if shared is None:
+                edge_ij = self._shared_edge(i, j)
+                if edge_ij is None:
                     continue
-                self._links.setdefault(i, {})[j] = shared
+                edge_ji = self._shared_edge(j, i)
+                self._links.setdefault(i, {})[j] = edge_ij
+                self._links.setdefault(j, {})[i] = edge_ji
 
     def _shared_edge(self, i, j):
         other = set(frozenset(edge) for edge in polygon_edges(self.regions[j]))
@@ -116,7 +118,7 @@ class NavMesh(object):
                     continue
                 came_from[neighbour] = node
                 if neighbour == target:
-                    return self._chain(came_from, node)
+                    return self._chain(came_from, neighbour)
                 queue.append(neighbour)
         return None
 
@@ -134,7 +136,7 @@ class NavMesh(object):
         goal = (float(goal[0]), float(goal[1]))
         regions = self.find_region_path(start, goal)
         if regions is None:
-            return [start]
+            return None
         portals = [
             self.portal(regions[i], regions[i + 1]) for i in range(len(regions) - 1)
         ]
@@ -149,54 +151,57 @@ def funnel(start, goal, portals):
     """
     points = [start]
     apex = start
-    left = None
-    right = None
-    left_index = -1
-    right_index = -1
-    index = 0
+    left = start
+    right = start
+    left_index = 0
+    right_index = 0
     total = len(portals)
-    while index < total:
-        candidate_left, candidate_right = portals[index]
-        if left is None:
-            left = candidate_left
-            right = candidate_right
-            left_index = index
-            right_index = index
-            index += 1
-            continue
+    index = 0
+    while index <= total:
+        if index < total:
+            candidate_left, candidate_right = portals[index]
+        else:
+            candidate_left = goal
+            candidate_right = goal
         if candidate_right != apex and (
-            right == apex or _area(apex, right, candidate_right) <= 0.0
+            right == apex or _side(apex, right, candidate_right) <= 0.0
         ):
             if (
                 left == apex
                 or right == apex
-                or _area(apex, left, candidate_right) > 0.0
+                or _side(apex, left, candidate_right) > 0.0
             ):
                 right = candidate_right
                 right_index = index
             else:
                 points.append(left)
                 apex = left
+                restart = left_index
                 left = apex
                 right = apex
-                index = left_index + 1
+                left_index = restart
+                right_index = restart
+                index = restart
                 continue
         if candidate_left != apex and (
-            left == apex or _area(apex, left, candidate_left) >= 0.0
+            left == apex or _side(apex, left, candidate_left) >= 0.0
         ):
             if (
                 right == apex
                 or left == apex
-                or _area(apex, right, candidate_left) < 0.0
+                or _side(apex, right, candidate_left) < 0.0
             ):
                 left = candidate_left
                 left_index = index
             else:
                 points.append(right)
                 apex = right
+                restart = right_index
                 left = apex
                 right = apex
-                index = right_index + 1
+                left_index = restart
+                right_index = restart
+                index = restart
                 continue
         index += 1
     points.append(goal)
@@ -214,7 +219,17 @@ def simplify(points, epsilon=EPSILON):
         cleaned.append((float(point[0]), float(point[1])))
     result = []
     for point in cleaned:
-        while len(result) >= 2 and _is_collinear(result[-2], result[-1], point):
+        while len(result) >= 2:
+            previous = result[-1]
+            before = result[-2]
+            if not _is_collinear(before, previous, point):
+                break
+            forward_x = previous[0] - before[0]
+            forward_y = previous[1] - before[1]
+            onward_x = point[0] - previous[0]
+            onward_y = point[1] - previous[1]
+            if forward_x * onward_x + forward_y * onward_y < 0.0:
+                break
             result.pop()
         result.append(point)
     return result
@@ -226,5 +241,5 @@ def path_length(points):
         return None
     total = 0.0
     for first, second in zip(points, points[1:]):
-        total += abs(second[0] - first[0]) + abs(second[1] - first[1])
+        total += _distance(first, second)
     return total
